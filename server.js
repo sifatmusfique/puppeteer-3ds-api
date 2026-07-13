@@ -51,7 +51,7 @@ app.post('/api/3ds-automate', async (req, res) => {
             return res.status(400).json({ error: 'URL is required' });
         }
 
-        // Launch Puppeteer with Render-optimized settings
+        // ===== LAUNCH PUPPETEER WITH CHROME INSTALLED BY postinstall =====
         const browser = await puppeteer.launch({
             headless: true,
             args: [
@@ -62,31 +62,7 @@ app.post('/api/3ds-automate', async (req, res) => {
                 '--disable-web-security',
                 '--disable-features=IsolateOrigins,site-per-process',
                 '--disable-blink-features=AutomationControlled',
-                '--disable-background-timer-throttling',
-                '--disable-backgrounding-occluded-windows',
-                '--disable-renderer-backgrounding',
-                '--disable-ipc-flooding-protection',
-                '--disable-hang-monitor',
-                '--disable-prompt-on-repost',
-                '--disable-sync',
-                '--disable-translate',
-                '--disable-default-apps',
-                '--disable-extensions',
-                '--disable-plugins',
-                '--disable-infobars',
-                '--disable-notifications',
-                '--disable-popup-blocking',
-                '--no-first-run',
-                '--force-color-profile=srgb',
-                '--metrics-recording-only',
-                '--password-store=basic',
-                '--use-mock-keychain',
-                '--single-process',
-                '--disable-accelerated-2d-canvas',
-                '--disable-accelerated-jpeg-decoding',
-                '--disable-accelerated-mjpeg-decode',
-                '--disable-accelerated-video-decode',
-                '--disable-accelerated-video-encode'
+                '--single-process'
             ],
             timeout: timeout
         });
