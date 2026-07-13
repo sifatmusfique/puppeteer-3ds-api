@@ -5,23 +5,48 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
-
-// ===== FIX: Set cache directory BEFORE any other code =====
-const CACHE_DIR = '/opt/render/.cache/puppeteer';
-process.env.PUPPETEER_CACHE_DIR = CACHE_DIR;
-
-console.log(`[${new Date().toISOString()}] PUPPETEER_CACHE_DIR set to: ${process.env.PUPPETEER_CACHE_DIR}`);
-
-// Create cache directory if it doesn't exist
-if (!fs.existsSync(CACHE_DIR)) {
-    fs.mkdirSync(CACHE_DIR, { recursive: true });
-    console.log(`[${new Date().toISOString()}] Created cache directory: ${CACHE_DIR}`);
-}
+const { execSync } = require('child_process');
 
 puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// ===== FIX: Download Chrome at startup =====
+const CHROME_CACHE_DIR = '/opt/render/.cache/puppeteer';
+const CHROME_PATH = path.join(CHROME_CACHE_DIR, 'chrome/linux-127.0.6533.88/chrome-linux64/chrome');
+
+console.log(`[${new Date().toISOString()}] Checking for Chrome at: ${CHROME_PATH}`);
+
+// Check if Chrome exists, if not, download it
+if (!fs.existsSync(CHROME_PATH)) {
+    console.log(`[${new Date().toISOString()}] Chrome not found, downloading...`);
+    
+    // Create cache directory
+    if (!fs.existsSync(CHROME_CACHE_DIR)) {
+        fs.mkdirSync(CHROME_CACHE_DIR, { recursive: true });
+    }
+    
+    try {
+        // Use npx to install Chrome
+        console.log(`[${new Date().toISOString()}] Running: npx puppeteer browsers install chrome`);
+        execSync('npx puppeteer browsers install chrome', {
+            cwd: __dirname,
+            stdio: 'inherit',
+            env: { ...process.env, PUPPETEER_CACHE_DIR: CHROME_CACHE_DIR }
+        });
+        console.log(`[${new Date().toISOString()}] Chrome installed successfully`);
+    } catch (error) {
+        console.error(`[${new Date().toISOString()}] Failed to install Chrome:`, error.message);
+    }
+}
+
+// Check again after installation
+if (fs.existsSync(CHROME_PATH)) {
+    console.log(`[${new Date().toISOString()}] ✅ Chrome found at: ${CHROME_PATH}`);
+} else {
+    console.log(`[${new Date().toISOString()}] ⚠️ Chrome still not found, will try puppeteer default`);
+}
 
 // Rate limiting
 const limiter = rateLimit({
@@ -40,16 +65,15 @@ app.get('/health', (req, res) => {
         status: 'ok',
         timestamp: new Date().toISOString(),
         service: 'puppeteer-3ds-api',
-        cache_dir: CACHE_DIR,
-        puppeteer_cache: process.env.PUPPETEER_CACHE_DIR
+        chrome_exists: fs.existsSync(CHROME_PATH),
+        chrome_path: CHROME_PATH
     });
 });
 
 // Test endpoint to check Chrome
 app.get('/test-chrome', (req, res) => {
     const chromePaths = [
-        '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
-        '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
+        CHROME_PATH,
         '/usr/bin/google-chrome',
         '/usr/bin/chromium-browser',
         '/usr/bin/chromium'
@@ -105,31 +129,29 @@ app.post('/api/3ds-automate', async (req, res) => {
 
         console.log(`[${new Date().toISOString()}] === NEW REQUEST ===`);
         console.log(`[${new Date().toISOString()}] URL: ${url ? url.substring(0, 100) : 'NO URL'}`);
-        console.log(`[${new Date().toISOString()}] PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR}`);
 
         if (!url) {
             return res.status(400).json({ error: 'URL is required' });
         }
 
         // ===== CHECK CHROME =====
-        const chromePath = '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome';
-        console.log(`[${new Date().toISOString()}] Checking Chrome at: ${chromePath}`);
-        console.log(`[${new Date().toISOString()}] Chrome exists: ${fs.existsSync(chromePath)}`);
+        console.log(`[${new Date().toISOString()}] Checking Chrome at: ${CHROME_PATH}`);
+        const chromeExists = fs.existsSync(CHROME_PATH);
+        console.log(`[${new Date().toISOString()}] Chrome exists: ${chromeExists}`);
 
-        // List cache directory
-        try {
-            const cacheDir = '/opt/render/.cache/puppeteer/chrome/';
-            if (fs.existsSync(cacheDir)) {
-                const files = fs.readdirSync(cacheDir);
-                console.log(`[${new Date().toISOString()}] Cache contents: ${files.join(', ')}`);
-            } else {
-                console.log(`[${new Date().toISOString()}] Cache directory does not exist`);
-                // Try to create it
-                fs.mkdirSync(cacheDir, { recursive: true });
-                console.log(`[${new Date().toISOString()}] Created cache directory`);
+        // If Chrome doesn't exist, try to install it
+        if (!chromeExists) {
+            console.log(`[${new Date().toISOString()}] Chrome not found, attempting to install...`);
+            try {
+                execSync('npx puppeteer browsers install chrome', {
+                    cwd: __dirname,
+                    stdio: 'inherit',
+                    env: { ...process.env, PUPPETEER_CACHE_DIR: CHROME_CACHE_DIR }
+                });
+                console.log(`[${new Date().toISOString()}] Chrome installed successfully`);
+            } catch (error) {
+                console.error(`[${new Date().toISOString()}] Failed to install Chrome:`, error.message);
             }
-        } catch (e) {
-            console.log(`[${new Date().toISOString()}] Error reading cache: ${e.message}`);
         }
 
         // ===== LAUNCH PUPPETEER =====
@@ -147,17 +169,15 @@ app.post('/api/3ds-automate', async (req, res) => {
                 '--disable-blink-features=AutomationControlled',
                 '--single-process'
             ],
-            timeout: timeout,
-            // Force puppeteer to use the correct cache
-            cacheDirectory: CACHE_DIR
+            timeout: timeout
         };
 
         // Only add executablePath if Chrome exists
-        if (fs.existsSync(chromePath)) {
-            launchOptions.executablePath = chromePath;
-            console.log(`[${new Date().toISOString()}] Using Chrome at: ${chromePath}`);
+        if (fs.existsSync(CHROME_PATH)) {
+            launchOptions.executablePath = CHROME_PATH;
+            console.log(`[${new Date().toISOString()}] Using Chrome at: ${CHROME_PATH}`);
         } else {
-            console.log(`[${new Date().toISOString()}] Chrome not found, trying to let puppeteer find it`);
+            console.log(`[${new Date().toISOString()}] Chrome not found, letting puppeteer find it`);
         }
 
         browser = await puppeteer.launch(launchOptions);
@@ -325,5 +345,4 @@ app.listen(PORT, () => {
     console.log(`   Health check: http://localhost:${PORT}/health`);
     console.log(`   Test Chrome: http://localhost:${PORT}/test-chrome`);
     console.log(`   API endpoint: http://localhost:${PORT}/api/3ds-automate`);
-    console.log(`   PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR}`);
 });

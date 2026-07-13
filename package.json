@@ -4,8 +4,7 @@
   "description": "Puppeteer 3DS Automation API",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "postinstall": "npx puppeteer browsers install chrome"
+    "start": "node server.js"
   },
   "engines": {
     "node": "20.x"
