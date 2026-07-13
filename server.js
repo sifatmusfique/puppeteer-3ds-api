@@ -3,14 +3,8 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const fs = require('fs');
 const path = require('path');
-
-// ===== FIX: Configure puppeteer cache path =====
-const os = require('os');
-const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
-process.env.PUPPETEER_CACHE_DIR = cacheDir;
-
-console.log(`[${new Date().toISOString()}] Puppeteer cache directory: ${cacheDir}`);
 
 puppeteer.use(StealthPlugin());
 
@@ -30,18 +24,57 @@ app.use(limiter);
 
 // Health check
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
+    res.json({
+        status: 'ok',
         timestamp: new Date().toISOString(),
-        service: 'puppeteer-3ds-api',
-        cache_dir: cacheDir
+        service: 'puppeteer-3ds-api'
+    });
+});
+
+// Test endpoint to check Chrome
+app.get('/test-chrome', (req, res) => {
+    const chromePaths = [
+        '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
+        '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
+        process.env.CHROME_PATH,
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chromium'
+    ];
+
+    const results = {};
+    for (const p of chromePaths) {
+        if (p) {
+            results[p] = fs.existsSync(p);
+        }
+    }
+
+    // List cache directory
+    let cacheContents = [];
+    try {
+        const cacheDir = '/opt/render/.cache/puppeteer/chrome/';
+        if (fs.existsSync(cacheDir)) {
+            cacheContents = fs.readdirSync(cacheDir);
+        }
+    } catch (e) {
+        cacheContents = ['Error reading: ' + e.message];
+    }
+
+    res.json({
+        chrome_paths: results,
+        cache_contents: cacheContents,
+        env: {
+            CHROME_PATH: process.env.CHROME_PATH || 'not set',
+            PUPPETEER_CACHE_DIR: process.env.PUPPETEER_CACHE_DIR || 'not set'
+        }
     });
 });
 
 // Main 3DS automation endpoint
 app.post('/api/3ds-automate', async (req, res) => {
     const startTime = Date.now();
-    
+    let browser = null;
+
     try {
         const {
             url,
@@ -54,75 +87,36 @@ app.post('/api/3ds-automate', async (req, res) => {
             viewport = { width: 1280, height: 720 }
         } = req.body;
 
-        console.log(`[${new Date().toISOString()}] Processing URL: ${url ? url.substring(0, 100) : 'NO URL'}...`);
+        console.log(`[${new Date().toISOString()}] === NEW REQUEST ===`);
+        console.log(`[${new Date().toISOString()}] URL: ${url ? url.substring(0, 100) : 'NO URL'}`);
 
         if (!url) {
             return res.status(400).json({ error: 'URL is required' });
         }
 
-        // ===== FIX: Check if Chrome exists before launching =====
-        const fs = require('fs');
-        const chromePath = path.join(cacheDir, 'chrome/linux-127.0.6533.88/chrome-linux64/chrome');
-        
-        console.log(`[${new Date().toISOString()}] Looking for Chrome at: ${chromePath}`);
-        
-        if (!fs.existsSync(chromePath)) {
-            console.error(`[${new Date().toISOString()}] Chrome not found at: ${chromePath}`);
-            console.log(`[${new Date().toISOString()}] Checking directory contents...`);
-            try {
-                const dirContents = fs.readdirSync(path.dirname(chromePath));
-                console.log(`[${new Date().toISOString()}] Contents: ${dirContents.join(', ')}`);
-            } catch (e) {
-                console.log(`[${new Date().toISOString()}] Could not read directory: ${e.message}`);
+        // ===== CHECK CHROME =====
+        const chromePath = '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome';
+        console.log(`[${new Date().toISOString()}] Checking Chrome at: ${chromePath}`);
+        console.log(`[${new Date().toISOString()}] Chrome exists: ${fs.existsSync(chromePath)}`);
+
+        // List cache directory
+        try {
+            const cacheDir = '/opt/render/.cache/puppeteer/chrome/';
+            if (fs.existsSync(cacheDir)) {
+                const files = fs.readdirSync(cacheDir);
+                console.log(`[${new Date().toISOString()}] Cache contents: ${files.join(', ')}`);
+            } else {
+                console.log(`[${new Date().toISOString()}] Cache directory does not exist`);
             }
-            
-            // Try to find Chrome anywhere in the cache
-            const findChrome = (dir) => {
-                try {
-                    const files = fs.readdirSync(dir);
-                    for (const file of files) {
-                        const fullPath = path.join(dir, file);
-                        if (fs.statSync(fullPath).isDirectory()) {
-                            const result = findChrome(fullPath);
-                            if (result) return result;
-                        } else if (file === 'chrome' || file === 'chromium' || file === 'google-chrome') {
-                            return fullPath;
-                        }
-                    }
-                } catch (e) {
-                    // Ignore
-                }
-                return null;
-            };
-            
-            const foundChrome = findChrome(cacheDir);
-            if (foundChrome) {
-                console.log(`[${new Date().toISOString()}] Found Chrome at: ${foundChrome}`);
-                // Use the found path instead
-                const browser = await puppeteer.launch({
-                    headless: true,
-                    executablePath: foundChrome,
-                    args: [
-                        '--no-sandbox',
-                        '--disable-setuid-sandbox',
-                        '--disable-dev-shm-usage',
-                        '--disable-gpu',
-                        '--disable-web-security',
-                        '--disable-features=IsolateOrigins,site-per-process',
-                        '--disable-blink-features=AutomationControlled',
-                        '--single-process'
-                    ],
-                    timeout: timeout
-                });
-                // ... rest of the code
-                return;
-            }
+        } catch (e) {
+            console.log(`[${new Date().toISOString()}] Error reading cache: ${e.message}`);
         }
 
-        // Launch with explicit Chrome path
-        const browser = await puppeteer.launch({
+        // ===== LAUNCH PUPPETEER =====
+        console.log(`[${new Date().toISOString()}] Launching browser...`);
+
+        const launchOptions = {
             headless: true,
-            executablePath: chromePath,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -134,150 +128,171 @@ app.post('/api/3ds-automate', async (req, res) => {
                 '--single-process'
             ],
             timeout: timeout
-        });
+        };
 
-        try {
-            const page = await browser.newPage();
-            
-            await page.setUserAgent(userAgent);
-            await page.setViewport(viewport);
-
-            // Set proxy if provided
-            if (proxy) {
-                try {
-                    const proxyUrl = new URL(proxy);
-                    if (proxyUrl.username && proxyUrl.password) {
-                        await page.authenticate({
-                            username: decodeURIComponent(proxyUrl.username),
-                            password: decodeURIComponent(proxyUrl.password)
-                        });
-                    }
-                } catch (e) {
-                    console.log('Proxy parse error:', e.message);
-                }
-            }
-
-            // Stealth / Anti-detection
-            await page.evaluateOnNewDocument(() => {
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                Object.defineProperty(navigator, 'languages', {
-                    get: () => ['en-US', 'en']
-                });
-            });
-
-            // Navigate to URL
-            console.log(`[${new Date().toISOString()}] Navigating to URL...`);
-            await page.goto(url, {
-                waitUntil: 'networkidle2',
-                timeout: timeout
-            });
-
-            // Auto-submit if enabled
-            if (autoSubmit) {
-                console.log(`[${new Date().toISOString()}] Looking for submit buttons...`);
-                try {
-                    await page.waitForSelector('button[type="submit"], input[type="submit"], .btn-primary, .continue-btn, .submit-btn', {
-                        timeout: 5000
-                    });
-                    await page.click('button[type="submit"], input[type="submit"], .btn-primary, .continue-btn, .submit-btn');
-                    console.log(`[${new Date().toISOString()}] Submit button clicked`);
-                } catch (e) {
-                    console.log(`[${new Date().toISOString()}] No submit button found, continuing...`);
-                }
-            }
-
-            // Wait for 3DS completion
-            if (waitFor3DS) {
-                console.log(`[${new Date().toISOString()}] Waiting for 3DS completion...`);
-                let completed = false;
-                let attempts = 0;
-                const maxAttempts = 60;
-
-                while (!completed && attempts < maxAttempts) {
-                    await new Promise(resolve => setTimeout(resolve, 1000));
-                    attempts++;
-                    
-                    try {
-                        const currentUrl = page.url();
-                        
-                        if (currentUrl.includes('checkout.stripe.com/return') ||
-                            currentUrl.includes('hooks.stripe.com') ||
-                            currentUrl.includes('payment_intent') ||
-                            currentUrl.includes('succeeded') ||
-                            currentUrl.includes('success_url')) {
-                            completed = true;
-                            console.log(`[${new Date().toISOString()}] ✅ 3DS completed at: ${currentUrl}`);
-                            break;
-                        }
-                        
-                        if (attempts % 10 === 0) {
-                            console.log(`[${new Date().toISOString()}] Waiting... ${attempts}s/${maxAttempts}s`);
-                        }
-                    } catch (e) {
-                        console.error('Polling error:', e.message);
-                    }
-                }
-            }
-
-            // Collect results
-            const finalUrl = await page.url();
-            const finalTitle = await page.title();
-            const finalContent = await page.content();
-            const finalCookies = await page.cookies();
-
-            let screenshotData = null;
-            if (screenshot) {
-                screenshotData = await page.screenshot({
-                    encoding: 'base64',
-                    fullPage: true,
-                    type: 'png'
-                });
-            }
-
-            // Parse URL parameters
-            const urlParams = new URLSearchParams(new URL(finalUrl).search);
-            const params = {};
-            for (const [key, value] of urlParams) {
-                params[key] = value;
-            }
-
-            await browser.close();
-
-            const result = {
-                success: true,
-                completed: true,
-                url: finalUrl,
-                title: finalTitle,
-                cookies: finalCookies,
-                params: params,
-                screenshot: screenshotData || null,
-                html: finalContent,
-                source: params.source || null,
-                payment_intent: params.payment_intent || null,
-                redirect_status: params.redirect_status || null,
-                client_secret: params.client_secret || null,
-                processing_time: Date.now() - startTime
-            };
-
-            console.log(`[${new Date().toISOString()}] ✅ Success! Time: ${result.processing_time}ms`);
-            res.json(result);
-
-        } catch (error) {
-            console.error(`[${new Date().toISOString()}] Error:`, error.message);
-            console.error('Stack:', error.stack);
-            await browser.close();
-            res.status(500).json({
-                success: false,
-                error: error.message,
-                processing_time: Date.now() - startTime
-            });
+        // Only add executablePath if Chrome exists
+        if (fs.existsSync(chromePath)) {
+            launchOptions.executablePath = chromePath;
+            console.log(`[${new Date().toISOString()}] Using Chrome at: ${chromePath}`);
+        } else {
+            console.log(`[${new Date().toISOString()}] Chrome not found, letting puppeteer find it`);
         }
+
+        browser = await puppeteer.launch(launchOptions);
+        console.log(`[${new Date().toISOString()}] Browser launched successfully`);
+
+        const page = await browser.newPage();
+        console.log(`[${new Date().toISOString()}] New page created`);
+
+        await page.setUserAgent(userAgent);
+        await page.setViewport(viewport);
+        console.log(`[${new Date().toISOString()}] User agent and viewport set`);
+
+        // Set proxy if provided
+        if (proxy) {
+            try {
+                const proxyUrl = new URL(proxy);
+                if (proxyUrl.username && proxyUrl.password) {
+                    await page.authenticate({
+                        username: decodeURIComponent(proxyUrl.username),
+                        password: decodeURIComponent(proxyUrl.password)
+                    });
+                    console.log(`[${new Date().toISOString()}] Proxy set`);
+                }
+            } catch (e) {
+                console.log('Proxy parse error:', e.message);
+            }
+        }
+
+        // Stealth / Anti-detection
+        await page.evaluateOnNewDocument(() => {
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'languages', {
+                get: () => ['en-US', 'en']
+            });
+        });
+        console.log(`[${new Date().toISOString()}] Anti-detection applied`);
+
+        // Navigate to URL
+        console.log(`[${new Date().toISOString()}] Navigating to URL...`);
+        await page.goto(url, {
+            waitUntil: 'networkidle2',
+            timeout: timeout
+        });
+        console.log(`[${new Date().toISOString()}] Navigation complete`);
+
+        // Auto-submit if enabled
+        if (autoSubmit) {
+            console.log(`[${new Date().toISOString()}] Looking for submit buttons...`);
+            try {
+                await page.waitForSelector('button[type="submit"], input[type="submit"], .btn-primary, .continue-btn, .submit-btn', {
+                    timeout: 5000
+                });
+                await page.click('button[type="submit"], input[type="submit"], .btn-primary, .continue-btn, .submit-btn');
+                console.log(`[${new Date().toISOString()}] Submit button clicked`);
+            } catch (e) {
+                console.log(`[${new Date().toISOString()}] No submit button found, continuing...`);
+            }
+        }
+
+        // Wait for 3DS completion
+        if (waitFor3DS) {
+            console.log(`[${new Date().toISOString()}] Waiting for 3DS completion...`);
+            let completed = false;
+            let attempts = 0;
+            const maxAttempts = 60;
+
+            while (!completed && attempts < maxAttempts) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                attempts++;
+
+                try {
+                    const currentUrl = page.url();
+
+                    if (currentUrl.includes('checkout.stripe.com/return') ||
+                        currentUrl.includes('hooks.stripe.com') ||
+                        currentUrl.includes('payment_intent') ||
+                        currentUrl.includes('succeeded') ||
+                        currentUrl.includes('success_url')) {
+                        completed = true;
+                        console.log(`[${new Date().toISOString()}] ✅ 3DS completed at: ${currentUrl}`);
+                        break;
+                    }
+
+                    if (attempts % 10 === 0) {
+                        console.log(`[${new Date().toISOString()}] Waiting... ${attempts}s/${maxAttempts}s`);
+                    }
+                } catch (e) {
+                    console.error('Polling error:', e.message);
+                }
+            }
+        }
+
+        // Collect results
+        console.log(`[${new Date().toISOString()}] Collecting results...`);
+        const finalUrl = await page.url();
+        const finalTitle = await page.title();
+        const finalContent = await page.content();
+        const finalCookies = await page.cookies();
+
+        let screenshotData = null;
+        if (screenshot) {
+            screenshotData = await page.screenshot({
+                encoding: 'base64',
+                fullPage: true,
+                type: 'png'
+            });
+            console.log(`[${new Date().toISOString()}] Screenshot captured`);
+        }
+
+        // Parse URL parameters
+        const urlParams = new URLSearchParams(new URL(finalUrl).search);
+        const params = {};
+        for (const [key, value] of urlParams) {
+            params[key] = value;
+        }
+
+        await browser.close();
+        console.log(`[${new Date().toISOString()}] Browser closed`);
+
+        const result = {
+            success: true,
+            completed: true,
+            url: finalUrl,
+            title: finalTitle,
+            cookies: finalCookies,
+            params: params,
+            screenshot: screenshotData || null,
+            html: finalContent,
+            source: params.source || null,
+            payment_intent: params.payment_intent || null,
+            redirect_status: params.redirect_status || null,
+            client_secret: params.client_secret || null,
+            processing_time: Date.now() - startTime
+        };
+
+        console.log(`[${new Date().toISOString()}] ✅ Success! Time: ${result.processing_time}ms`);
+        console.log(`[${new Date().toISOString()}] === REQUEST COMPLETED ===`);
+        res.json(result);
+
     } catch (error) {
-        console.error(`[${new Date().toISOString()}] Fatal error:`, error.message);
-        console.error('Stack:', error.stack);
+        console.error(`[${new Date().toISOString()}] ❌ ERROR:`, error.message);
+        console.error(`[${new Date().toISOString()}] Stack:`, error.stack);
+
+        if (browser) {
+            try {
+                await browser.close();
+                console.log(`[${new Date().toISOString()}] Browser closed after error`);
+            } catch (e) {
+                console.log(`[${new Date().toISOString()}] Error closing browser: ${e.message}`);
+            }
+        }
+
         res.status(500).json({
             success: false,
-            error: error.message
+            error: error.message,
+            stack: error.stack,
+            processing_time: Date.now() - startTime
         });
     }
 });
@@ -286,5 +301,6 @@ app.post('/api/3ds-automate', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`✅ Puppeteer 3DS API Server running on port ${PORT}`);
     console.log(`   Health check: http://localhost:${PORT}/health`);
+    console.log(`   Test Chrome: http://localhost:${PORT}/test-chrome`);
     console.log(`   API endpoint: http://localhost:${PORT}/api/3ds-automate`);
 });
