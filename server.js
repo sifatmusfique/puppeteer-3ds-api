@@ -139,6 +139,29 @@ app.post('/api/3ds-automate', async (req, res) => {
             timeout: timeout
         };
 
+        // ===== CONFIG PROTOCOL PROXY IF PROVIDED =====
+        if (proxy) {
+            try {
+                let parsedProxy = proxy.trim();
+                const parts = parsedProxy.split(':');
+                if (parts.length >= 2) {
+                    const host = parts[0];
+                    const port = parts[1];
+                    launchOptions.args.push(`--proxy-server=http://${host}:${port}`);
+                    console.log(`[${new Date().toISOString()}] Added browser proxy server arg: http://${host}:${port}`);
+                } else {
+                    if (!parsedProxy.startsWith('http://') && !parsedProxy.startsWith('https://')) {
+                        parsedProxy = 'http://' + parsedProxy;
+                    }
+                    const proxyUrl = new URL(parsedProxy);
+                    launchOptions.args.push(`--proxy-server=http://${proxyUrl.host}`);
+                    console.log(`[${new Date().toISOString()}] Added browser proxy server arg: http://${proxyUrl.host}`);
+                }
+            } catch (e) {
+                console.log('Proxy launch arg config error:', e.message);
+            }
+        }
+
         if (chromeExists) {
             launchOptions.executablePath = CHROME_PATH;
             console.log(`[${new Date().toISOString()}] Using Chrome at: ${CHROME_PATH}`);
@@ -160,16 +183,36 @@ app.post('/api/3ds-automate', async (req, res) => {
         // ===== SET PROXY IF PROVIDED =====
         if (proxy) {
             try {
-                const proxyUrl = new URL(proxy);
-                if (proxyUrl.username && proxyUrl.password) {
+                let parsedProxy = proxy.trim();
+                // Check if it's formatted as raw ip:port:user:pass
+                const parts = parsedProxy.split(':');
+                if (parts.length >= 4) {
+                    const host = parts[0];
+                    const port = parts[1];
+                    const user = parts[2];
+                    const pass = parts[3];
+                    console.log(`[${new Date().toISOString()}] Configured proxy authentication for credentials: ${user}:******`);
                     await page.authenticate({
-                        username: decodeURIComponent(proxyUrl.username),
-                        password: decodeURIComponent(proxyUrl.password)
+                        username: decodeURIComponent(user),
+                        password: decodeURIComponent(pass)
                     });
-                    console.log(`[${new Date().toISOString()}] Proxy set`);
+                } else {
+                    // Try parsing as standard URL
+                    if (!parsedProxy.startsWith('http://') && !parsedProxy.startsWith('https://')) {
+                        parsedProxy = 'http://' + parsedProxy;
+                    }
+                    const proxyUrl = new URL(parsedProxy);
+                    if (proxyUrl.username && proxyUrl.password) {
+                        console.log(`[${new Date().toISOString()}] Configured proxy credentials from URL: ${proxyUrl.username}:******`);
+                        await page.authenticate({
+                            username: decodeURIComponent(proxyUrl.username),
+                            password: decodeURIComponent(proxyUrl.password)
+                        });
+                    }
                 }
+                console.log(`[${new Date().toISOString()}] Proxy authentication registered`);
             } catch (e) {
-                console.log('Proxy parse error:', e.message);
+                console.log('Proxy authentication config warning:', e.message);
             }
         }
 
@@ -177,29 +220,139 @@ app.post('/api/3ds-automate', async (req, res) => {
         await page.evaluateOnNewDocument(() => {
             // Remove webdriver
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            
-            // Fake plugins
+
+            // Override chrome object to look exactly like standard retail chrome
+            window.chrome = {
+                app: {
+                    isInstalled: false,
+                    InstallState: {
+                        DISABLED: 'disabled',
+                        INSTALLED: 'installed',
+                        NOT_INSTALLED: 'not_installed'
+                    },
+                    RunningState: {
+                        CANNOT_RUN: 'cannot_run',
+                        READY_TO_RUN: 'ready_to_run',
+                        RUNNING: 'running'
+                    }
+                },
+                runtime: {
+                    OnInstalledReason: {
+                        CHROME_UPDATE: 'chrome_update',
+                        INSTALL: 'install',
+                        SHARED_MODULE_UPDATE: 'shared_module_update',
+                        UPDATE: 'update'
+                    },
+                    OnRestartRequiredReason: {
+                        APP_UPDATE: 'app_update',
+                        OS_UPDATE: 'os_update',
+                        PERIODIC: 'periodic'
+                    },
+                    PlatformArch: {
+                        ARM: 'arm',
+                        ARM64: 'arm64',
+                        MIPS: 'mips',
+                        MIPS64: 'mips64',
+                        X86_32: 'x86-32',
+                        X86_64: 'x86-64'
+                    },
+                    PlatformNaclArch: {
+                        ARM: 'arm',
+                        MIPS: 'mips',
+                        MIPS64: 'mips64',
+                        X86_32: 'x86-32',
+                        X86_64: 'x86-64'
+                    },
+                    PlatformOs: {
+                        ANDROID: 'android',
+                        CROS: 'cros',
+                        LINUX: 'linux',
+                        MAC: 'mac',
+                        OPENBSD: 'openbsd',
+                        WIN: 'win'
+                    },
+                    RequestUpdateCheckStatus: {
+                        NO_UPDATE: 'no_update',
+                        THROTTLED: 'throttled',
+                        UPDATE_AVAILABLE: 'update_available'
+                    },
+                    connect: () => { },
+                    sendMessage: () => { }
+                },
+                loadTimes: function () { },
+                csi: function () { }
+            };
+
+            // Fake plugins matching real browser standard layout
+            const mockPlugins = [
+                { name: 'PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer' },
+                { name: 'Chrome PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer' },
+                { name: 'Chromium PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer' },
+                { name: 'Microsoft Edge PDF Viewer', description: 'Portable Document Format', filename: 'internal-pdf-viewer' },
+                { name: 'WebKit built-in PDF', description: 'Portable Document Format', filename: 'internal-pdf-viewer' }
+            ];
+
             Object.defineProperty(navigator, 'plugins', {
                 get: () => {
-                    const plugins = [
-                        { name: 'Chrome PDF Plugin' },
-                        { name: 'Chrome PDF Viewer' },
-                        { name: 'Native Client' }
-                    ];
-                    plugins.item = function(i) { return this[i] || null; };
-                    plugins.namedItem = function(n) {
+                    const plugins = [...mockPlugins];
+                    plugins.item = function (i) { return this[i] || null; };
+                    plugins.namedItem = function (n) {
                         return this.find(p => p.name === n) || null;
                     };
-                    plugins.refresh = function() {};
+                    plugins.refresh = function () { };
                     return plugins;
                 }
             });
-            
+
+            // Fake MIME Types matching PDF viewer extension
+            Object.defineProperty(navigator, 'mimeTypes', {
+                get: () => {
+                    const mimeTypes = [
+                        { type: 'application/pdf', description: 'Portable Document Format', suffixes: 'pdf', enabledPlugin: mockPlugins[0] },
+                        { type: 'text/pdf', description: 'Portable Document Format', suffixes: 'pdf', enabledPlugin: mockPlugins[0] }
+                    ];
+                    mimeTypes.item = function (i) { return this[i] || null; };
+                    mimeTypes.namedItem = function (n) {
+                        return this.find(m => m.type === n) || null;
+                    };
+                    return mimeTypes;
+                }
+            });
+
+            // Override WebGL Vendor & Renderer to mock high-end desktop hardware
+            const getParameter = HTMLCanvasElement.prototype.getContext;
+            HTMLCanvasElement.prototype.getContext = function (type, attributes) {
+                const ctx = getParameter.apply(this, arguments);
+                if (type === 'webgl' || type === 'experimental-webgl' || type === 'webgl2') {
+                    const origGetParameter = ctx.getParameter;
+                    ctx.getParameter = function (parameter) {
+                        // UNMASKED_VENDOR_WEBGL
+                        if (parameter === 37445) {
+                            return 'Google Inc. (NVIDIA)';
+                        }
+                        // UNMASKED_RENDERER_WEBGL
+                        if (parameter === 37446) {
+                            return 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3060 Direct3D11 vs_5_0 ps_5_0, D3D11)';
+                        }
+                        // VENDOR
+                        if (parameter === 7936) {
+                            return 'WebKit';
+                        }
+                        // RENDERER
+                        if (parameter === 7937) {
+                            return 'WebKit WebGL';
+                        }
+                        return origGetParameter.apply(this, arguments);
+                    };
+                }
+                return ctx;
+            };
+
             // Fake languages
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['en-US', 'en']
             });
-            
+
             // Fake permissions
             const originalQuery = window.navigator.permissions.query;
             window.navigator.permissions.query = (parameters) => (
@@ -207,18 +360,11 @@ app.post('/api/3ds-automate', async (req, res) => {
                     Promise.resolve({ state: Notification.permission }) :
                     originalQuery(parameters)
             );
-            
-            // Override chrome object
-            if (window.chrome) {
-                window.chrome.runtime = {};
-                window.chrome.loadTimes = function() {};
-                window.chrome.csi = function() {};
-            }
-            
-            // Remove PhantomJS detection
+
+            // Remove PhantomJS / Headless indicators
             if (window.callPhantom) delete window.callPhantom;
             if (window._phantom) delete window._phantom;
-            
+
             // Override navigator properties
             Object.defineProperty(navigator, 'connection', {
                 get: () => ({
@@ -228,31 +374,31 @@ app.post('/api/3ds-automate', async (req, res) => {
                     saveData: false
                 })
             });
-            
+
             Object.defineProperty(navigator, 'hardwareConcurrency', {
                 get: () => 8
             });
-            
+
             Object.defineProperty(navigator, 'deviceMemory', {
                 get: () => 8
             });
-            
+
             Object.defineProperty(navigator, 'platform', {
                 get: () => 'Win32'
             });
-            
-            // Override screen
+
+            // Override screen size to avoid standard 800x600 headless footprint
             Object.defineProperty(window.screen, 'availWidth', {
-                get: () => 1366
+                get: () => 1920
             });
             Object.defineProperty(window.screen, 'availHeight', {
-                get: () => 768
+                get: () => 1080
             });
             Object.defineProperty(window.screen, 'width', {
-                get: () => 1366
+                get: () => 1920
             });
             Object.defineProperty(window.screen, 'height', {
-                get: () => 768
+                get: () => 1080
             });
         });
 
@@ -305,10 +451,10 @@ app.post('/api/3ds-automate', async (req, res) => {
                             if (visible && enabled) {
                                 await button.click();
                                 console.log(`[${new Date().toISOString()}] Clicked submit button (attempt ${attempt + 1})`);
-                                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 }).catch(() => {});
+                                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 }).catch(() => { });
                                 break;
                             }
-                        } catch (e) {}
+                        } catch (e) { }
                     }
                 } catch (e) {
                     console.log(`[${new Date().toISOString()}] Auto-submit attempt ${attempt + 1} failed`);
@@ -343,7 +489,7 @@ app.post('/api/3ds-automate', async (req, res) => {
 
                     // Check for errors
                     const pageContent = await page.content();
-                    if (pageContent.includes('error') || pageContent.includes('declined') || 
+                    if (pageContent.includes('error') || pageContent.includes('declined') ||
                         pageContent.includes('failed') || pageContent.includes('authentication_failure')) {
                         console.log(`[${new Date().toISOString()}] ❌ Error detected`);
                         break;
@@ -359,11 +505,11 @@ app.post('/api/3ds-automate', async (req, res) => {
                                 if (await button.isVisible() && await button.isEnabled()) {
                                     await button.click();
                                     console.log(`[${new Date().toISOString()}] Clicked dynamic button`);
-                                    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 }).catch(() => {});
+                                    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 }).catch(() => { });
                                     break;
                                 }
                             }
-                        } catch (e) {}
+                        } catch (e) { }
                     }
 
                     if (attempts % 10 === 0) {
