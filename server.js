@@ -6,7 +6,6 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
 
-// ===== USE STEALTH PLUGIN =====
 puppeteer.use(StealthPlugin());
 
 const app = express();
@@ -32,45 +31,6 @@ app.get('/health', (req, res) => {
     });
 });
 
-// ===== TEST CHROME ENDPOINT =====
-app.get('/test-chrome', (req, res) => {
-    const chromePaths = [
-        '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
-        '/usr/bin/google-chrome',
-        '/usr/bin/chromium-browser',
-        '/usr/bin/chromium'
-    ];
-
-    const results = {};
-    for (const p of chromePaths) {
-        if (p) {
-            results[p] = fs.existsSync(p);
-        }
-    }
-
-    let cacheContents = [];
-    try {
-        const cacheDir = '/opt/render/.cache/puppeteer/chrome/';
-        if (fs.existsSync(cacheDir)) {
-            cacheContents = fs.readdirSync(cacheDir);
-        }
-    } catch (e) {
-        cacheContents = ['Error reading: ' + e.message];
-    }
-
-    res.json({
-        chrome_paths: results,
-        cache_contents: cacheContents,
-        env: {
-            CHROME_PATH: process.env.CHROME_PATH || 'not set',
-            PUPPETEER_CACHE_DIR: process.env.PUPPETEER_CACHE_DIR || 'not set'
-        },
-        cache_dir_exists: fs.existsSync('/opt/render/.cache/puppeteer'),
-        cache_dir_contents: fs.existsSync('/opt/render/.cache/puppeteer') ?
-            fs.readdirSync('/opt/render/.cache/puppeteer') : []
-    });
-});
-
 // ===== MAIN 3DS AUTOMATION ENDPOINT =====
 app.post('/api/3ds-automate', async (req, res) => {
     const startTime = Date.now();
@@ -85,25 +45,18 @@ app.post('/api/3ds-automate', async (req, res) => {
             waitFor3DS = true,
             screenshot = false,
             autoSubmit = true,
-            viewport = { width: 1280, height: 720 },
-            is_fingerprint = false
+            viewport = { width: 1280, height: 720 }
         } = req.body;
 
-        console.log(`[${new Date().toISOString()}] === NEW REQUEST ===`);
-        console.log(`[${new Date().toISOString()}] URL: ${url ? url.substring(0, 150) : 'NO URL'}...`);
-        console.log(`[${new Date().toISOString()}] Is fingerprint: ${is_fingerprint}`);
+        console.log(`[${new Date().toISOString()}] Processing URL: ${url ? url.substring(0, 150) : 'NO URL'}...`);
         console.log(`[${new Date().toISOString()}] Proxy: ${proxy ? 'Yes' : 'No'}`);
+        console.log(`[${new Date().toISOString()}] Wait for 3DS: ${waitFor3DS}`);
 
         if (!url) {
             return res.status(400).json({ error: 'URL is required' });
         }
 
         // ===== LAUNCH PUPPETEER =====
-        const chromePath = '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome';
-        const chromeExists = fs.existsSync(chromePath);
-
-        console.log(`[${new Date().toISOString()}] Chrome exists: ${chromeExists}`);
-
         const launchOptions = {
             headless: true,
             args: [
@@ -143,10 +96,6 @@ app.post('/api/3ds-automate', async (req, res) => {
             timeout: timeout
         };
 
-        if (chromeExists) {
-            launchOptions.executablePath = chromePath;
-        }
-
         browser = await puppeteer.launch(launchOptions);
         console.log(`[${new Date().toISOString()}] Browser launched successfully`);
 
@@ -175,36 +124,12 @@ app.post('/api/3ds-automate', async (req, res) => {
 
         // ===== STEALTH / ANTI-DETECTION =====
         await page.evaluateOnNewDocument(() => {
-            // Remove webdriver
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-
-            // Fake plugins
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => {
-                    const plugins = [
-                        { name: 'Chrome PDF Plugin' },
-                        { name: 'Chrome PDF Viewer' },
-                        { name: 'Native Client' }
-                    ];
-                    plugins.item = function(i) { return this[i] || null; };
-                    plugins.namedItem = function(n) {
-                        return this.find(p => p.name === n) || null;
-                    };
-                    plugins.refresh = function() {};
-                    return plugins;
-                }
-            });
-
-            // Fake languages
             Object.defineProperty(navigator, 'languages', {
                 get: () => ['en-US', 'en']
             });
-
-            // Remove PhantomJS detection
             if (window.callPhantom) delete window.callPhantom;
             if (window._phantom) delete window._phantom;
-
-            // Override chrome object
             if (window.chrome) {
                 window.chrome.runtime = {};
                 window.chrome.loadTimes = function() {};
@@ -212,34 +137,12 @@ app.post('/api/3ds-automate', async (req, res) => {
             }
         });
 
-        // ===== SET EXTRA HEADERS =====
-        await page.setExtraHTTPHeaders({
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Upgrade-Insecure-Requests': '1'
-        });
-
         // ===== NAVIGATE TO URL =====
         console.log(`[${new Date().toISOString()}] Navigating to URL...`);
-        
-        try {
-            await page.goto(url, {
-                waitUntil: is_fingerprint ? 'networkidle0' : 'networkidle2',
-                timeout: timeout
-            });
-        } catch (navError) {
-            console.log(`[${new Date().toISOString()}] Navigation warning: ${navError.message}`);
-            // Try to continue even if navigation partially failed
-            try {
-                await page.waitForSelector('body', { timeout: 5000 });
-            } catch (bodyError) {
-                throw new Error('Page navigation failed: ' + navError.message);
-            }
-        }
+        await page.goto(url, {
+            waitUntil: 'networkidle2',
+            timeout: timeout
+        });
 
         console.log(`[${new Date().toISOString()}] Page loaded. Current URL: ${page.url()}`);
 
@@ -247,20 +150,16 @@ app.post('/api/3ds-automate', async (req, res) => {
         if (autoSubmit) {
             console.log(`[${new Date().toISOString()}] Looking for forms to submit...`);
 
-            // Try multiple times to catch dynamically loaded buttons
             for (let attempt = 0; attempt < 3; attempt++) {
                 try {
-                    // Wait a bit for forms to load
                     if (attempt > 0) {
                         await new Promise(resolve => setTimeout(resolve, 2000));
                     }
 
-                    // Find and click submit buttons
                     const buttons = await page.$$(
                         'button[type="submit"], input[type="submit"], ' +
                         '.btn-primary, .continue-btn, .submit-btn, .btn-continue, ' +
-                        'button[role="button"], input[role="button"], ' +
-                        '.btn, button:not([type="button"])'
+                        '[role="button"], .btn:not([type="button"])'
                     );
 
                     for (const button of buttons) {
@@ -301,7 +200,7 @@ app.post('/api/3ds-automate', async (req, res) => {
                 try {
                     const currentUrl = page.url();
 
-                    // ===== CHECK FOR COMPLETION INDICATORS =====
+                    // Check for completion indicators
                     const completionIndicators = [
                         'checkout.stripe.com/return',
                         'hooks.stripe.com',
@@ -326,22 +225,20 @@ app.post('/api/3ds-automate', async (req, res) => {
 
                     if (completed) break;
 
-                    // ===== CHECK FOR ERROR INDICATORS =====
+                    // Check for errors
                     const errorIndicators = ['error', 'declined', 'failed', 'authentication_failure', 'card_declined'];
                     const pageContent = await page.content();
-                    let hasError = false;
                     for (const indicator of errorIndicators) {
                         if (pageContent.includes(indicator) || currentUrl.includes(indicator)) {
                             console.log(`[${new Date().toISOString()}] ❌ Error detected: ${indicator}`);
-                            hasError = true;
+                            completed = true;
                             break;
                         }
                     }
 
-                    if (hasError) break;
+                    if (completed) break;
 
-                    // ===== AUTO-SUBMIT DYNAMIC FORMS =====
-                    // Some 3DS flows load forms after JavaScript execution
+                    // Try to click dynamic submit buttons
                     if (attempts % 5 === 0) {
                         try {
                             const dynamicButtons = await page.$$(
@@ -366,35 +263,9 @@ app.post('/api/3ds-automate', async (req, res) => {
                         }
                     }
 
-                    // ===== CHECK FOR OTP FIELDS =====
-                    if (attempts % 10 === 0) {
-                        try {
-                            const otpInputs = await page.$$(
-                                'input[type="text"], input[type="password"], ' +
-                                'input[name*="otp"], input[name*="code"], input[name*="token"], ' +
-                                'input[id*="otp"], input[id*="code"], input[id*="token"]'
-                            );
-                            for (const input of otpInputs) {
-                                const visible = await input.isVisible();
-                                if (visible) {
-                                    console.log(`[${new Date().toISOString()}] ⚠️ OTP field detected - waiting for input`);
-                                    // We'll keep waiting - user might have entered it
-                                    break;
-                                }
-                            }
-                        } catch (e) {
-                            // No OTP fields
-                        }
-                    }
-
-                    // ===== CHECK FOR PAGE CHANGE =====
-                    if (currentUrl !== lastUrl) {
-                        console.log(`[${new Date().toISOString()}] URL changed to: ${currentUrl.substring(0, 100)}...`);
-                        lastUrl = currentUrl;
-                    }
-
                     if (attempts % 10 === 0) {
                         console.log(`[${new Date().toISOString()}] Waiting... ${attempts}s/${maxAttempts}s`);
+                        console.log(`[${new Date().toISOString()}] Current URL: ${currentUrl.substring(0, 100)}...`);
                     }
 
                 } catch (e) {
@@ -483,7 +354,6 @@ app.post('/api/3ds-automate', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`✅ Puppeteer 3DS API Server running on port ${PORT}`);
     console.log(`   Health check: http://localhost:${PORT}/health`);
-    console.log(`   Test Chrome: http://localhost:${PORT}/test-chrome`);
     console.log(`   API endpoint: http://localhost:${PORT}/api/3ds-automate`);
 });
 
