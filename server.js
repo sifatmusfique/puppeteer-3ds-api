@@ -5,13 +5,48 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 
 puppeteer.use(StealthPlugin());
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ===== RATE LIMITING =====
+// ===== FIX: Download Chrome at startup =====
+const CHROME_CACHE_DIR = '/opt/render/.cache/puppeteer';
+const CHROME_PATH = path.join(CHROME_CACHE_DIR, 'chrome/linux-127.0.6533.88/chrome-linux64/chrome');
+
+console.log(`[${new Date().toISOString()}] Checking for Chrome at: ${CHROME_PATH}`);
+
+// Check if Chrome exists, if not, download it
+if (!fs.existsSync(CHROME_PATH)) {
+    console.log(`[${new Date().toISOString()}] Chrome not found, downloading...`);
+    
+    // Create cache directory
+    if (!fs.existsSync(CHROME_CACHE_DIR)) {
+        fs.mkdirSync(CHROME_CACHE_DIR, { recursive: true });
+    }
+    
+    try {
+        console.log(`[${new Date().toISOString()}] Running: npx puppeteer browsers install chrome`);
+        execSync('npx puppeteer browsers install chrome', {
+            cwd: __dirname,
+            stdio: 'inherit',
+            env: { ...process.env, PUPPETEER_CACHE_DIR: CHROME_CACHE_DIR }
+        });
+        console.log(`[${new Date().toISOString()}] Chrome installed successfully`);
+    } catch (error) {
+        console.error(`[${new Date().toISOString()}] Failed to install Chrome:`, error.message);
+    }
+}
+
+if (fs.existsSync(CHROME_PATH)) {
+    console.log(`[${new Date().toISOString()}] ✅ Chrome found at: ${CHROME_PATH}`);
+} else {
+    console.log(`[${new Date().toISOString()}] ⚠️ Chrome still not found, will try puppeteer default`);
+}
+
+// Rate limiting
 const limiter = rateLimit({
     windowMs: 60 * 1000,
     max: 20,
@@ -22,16 +57,57 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(limiter);
 
-// ===== HEALTH CHECK =====
+// Health check
 app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        service: 'puppeteer-3ds-api'
+        service: 'puppeteer-3ds-api',
+        chrome_exists: fs.existsSync(CHROME_PATH),
+        chrome_path: CHROME_PATH
     });
 });
 
-// ===== MAIN 3DS AUTOMATION ENDPOINT =====
+// Test endpoint to check Chrome
+app.get('/test-chrome', (req, res) => {
+    const chromePaths = [
+        CHROME_PATH,
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium-browser',
+        '/usr/bin/chromium'
+    ];
+
+    const results = {};
+    for (const p of chromePaths) {
+        if (p) {
+            results[p] = fs.existsSync(p);
+        }
+    }
+
+    let cacheContents = [];
+    try {
+        const cacheDir = '/opt/render/.cache/puppeteer/chrome/';
+        if (fs.existsSync(cacheDir)) {
+            cacheContents = fs.readdirSync(cacheDir);
+        }
+    } catch (e) {
+        cacheContents = ['Error reading: ' + e.message];
+    }
+
+    res.json({
+        chrome_paths: results,
+        cache_contents: cacheContents,
+        env: {
+            CHROME_PATH: process.env.CHROME_PATH || 'not set',
+            PUPPETEER_CACHE_DIR: process.env.PUPPETEER_CACHE_DIR || 'not set'
+        },
+        cache_dir_exists: fs.existsSync('/opt/render/.cache/puppeteer'),
+        cache_dir_contents: fs.existsSync('/opt/render/.cache/puppeteer') ? 
+            fs.readdirSync('/opt/render/.cache/puppeteer') : []
+    });
+});
+
+// Main 3DS automation endpoint
 app.post('/api/3ds-automate', async (req, res) => {
     const startTime = Date.now();
     let browser = null;
@@ -48,15 +124,20 @@ app.post('/api/3ds-automate', async (req, res) => {
             viewport = { width: 1280, height: 720 }
         } = req.body;
 
-        console.log(`[${new Date().toISOString()}] Processing URL: ${url ? url.substring(0, 150) : 'NO URL'}...`);
-        console.log(`[${new Date().toISOString()}] Proxy: ${proxy ? 'Yes' : 'No'}`);
-        console.log(`[${new Date().toISOString()}] Wait for 3DS: ${waitFor3DS}`);
+        console.log(`[${new Date().toISOString()}] === NEW REQUEST ===`);
+        console.log(`[${new Date().toISOString()}] URL: ${url ? url.substring(0, 100) : 'NO URL'}`);
 
         if (!url) {
             return res.status(400).json({ error: 'URL is required' });
         }
 
+        // ===== CHECK CHROME =====
+        const chromeExists = fs.existsSync(CHROME_PATH);
+        console.log(`[${new Date().toISOString()}] Chrome exists: ${chromeExists}`);
+
         // ===== LAUNCH PUPPETEER =====
+        console.log(`[${new Date().toISOString()}] Launching browser...`);
+
         const launchOptions = {
             headless: true,
             args: [
@@ -67,6 +148,7 @@ app.post('/api/3ds-automate', async (req, res) => {
                 '--disable-web-security',
                 '--disable-features=IsolateOrigins,site-per-process',
                 '--disable-blink-features=AutomationControlled',
+                '--single-process',
                 '--disable-background-timer-throttling',
                 '--disable-backgrounding-occluded-windows',
                 '--disable-renderer-backgrounding',
@@ -85,16 +167,17 @@ app.post('/api/3ds-automate', async (req, res) => {
                 '--force-color-profile=srgb',
                 '--metrics-recording-only',
                 '--password-store=basic',
-                '--use-mock-keychain',
-                '--single-process',
-                '--disable-accelerated-2d-canvas',
-                '--disable-accelerated-jpeg-decoding',
-                '--disable-accelerated-mjpeg-decode',
-                '--disable-accelerated-video-decode',
-                '--disable-accelerated-video-encode'
+                '--use-mock-keychain'
             ],
             timeout: timeout
         };
+
+        if (chromeExists) {
+            launchOptions.executablePath = CHROME_PATH;
+            console.log(`[${new Date().toISOString()}] Using Chrome at: ${CHROME_PATH}`);
+        } else {
+            console.log(`[${new Date().toISOString()}] Chrome not found, letting puppeteer find it`);
+        }
 
         browser = await puppeteer.launch(launchOptions);
         console.log(`[${new Date().toISOString()}] Browser launched successfully`);
@@ -102,11 +185,11 @@ app.post('/api/3ds-automate', async (req, res) => {
         const page = await browser.newPage();
         console.log(`[${new Date().toISOString()}] New page created`);
 
-        // ===== SET USER AGENT AND VIEWPORT =====
         await page.setUserAgent(userAgent);
         await page.setViewport(viewport);
+        console.log(`[${new Date().toISOString()}] User agent and viewport set`);
 
-        // ===== SET PROXY IF PROVIDED =====
+        // Set proxy if provided
         if (proxy) {
             try {
                 const proxyUrl = new URL(proxy);
@@ -115,14 +198,14 @@ app.post('/api/3ds-automate', async (req, res) => {
                         username: decodeURIComponent(proxyUrl.username),
                         password: decodeURIComponent(proxyUrl.password)
                     });
-                    console.log(`[${new Date().toISOString()}] Proxy authentication set`);
+                    console.log(`[${new Date().toISOString()}] Proxy set`);
                 }
             } catch (e) {
                 console.log('Proxy parse error:', e.message);
             }
         }
 
-        // ===== STEALTH / ANTI-DETECTION =====
+        // Stealth / Anti-detection
         await page.evaluateOnNewDocument(() => {
             Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
             Object.defineProperty(navigator, 'languages', {
@@ -136,32 +219,28 @@ app.post('/api/3ds-automate', async (req, res) => {
                 window.chrome.csi = function() {};
             }
         });
+        console.log(`[${new Date().toISOString()}] Anti-detection applied`);
 
-        // ===== NAVIGATE TO URL =====
+        // Navigate to URL
         console.log(`[${new Date().toISOString()}] Navigating to URL...`);
         await page.goto(url, {
             waitUntil: 'networkidle2',
             timeout: timeout
         });
+        console.log(`[${new Date().toISOString()}] Navigation complete. Current URL: ${page.url()}`);
 
-        console.log(`[${new Date().toISOString()}] Page loaded. Current URL: ${page.url()}`);
-
-        // ===== AUTO-SUBMIT FORMS IF ENABLED =====
+        // Auto-submit if enabled
         if (autoSubmit) {
-            console.log(`[${new Date().toISOString()}] Looking for forms to submit...`);
-
+            console.log(`[${new Date().toISOString()}] Looking for submit buttons...`);
+            // Try multiple times for dynamic content
             for (let attempt = 0; attempt < 3; attempt++) {
                 try {
-                    if (attempt > 0) {
-                        await new Promise(resolve => setTimeout(resolve, 2000));
-                    }
-
+                    if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 2000));
                     const buttons = await page.$$(
                         'button[type="submit"], input[type="submit"], ' +
                         '.btn-primary, .continue-btn, .submit-btn, .btn-continue, ' +
-                        '[role="button"], .btn:not([type="button"])'
+                        'button[role="button"], .btn:not([type="button"])'
                     );
-
                     for (const button of buttons) {
                         try {
                             const visible = await button.isVisible();
@@ -169,29 +248,23 @@ app.post('/api/3ds-automate', async (req, res) => {
                             if (visible && enabled) {
                                 await button.click();
                                 console.log(`[${new Date().toISOString()}] Clicked submit button (attempt ${attempt + 1})`);
-                                await page.waitForNavigation({
-                                    waitUntil: 'networkidle2',
-                                    timeout: 5000
-                                }).catch(() => {});
+                                await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 }).catch(() => {});
                                 break;
                             }
-                        } catch (e) {
-                            // Continue to next button
-                        }
+                        } catch (e) {}
                     }
                 } catch (e) {
-                    console.log(`[${new Date().toISOString()}] Auto-submit attempt ${attempt + 1} failed: ${e.message}`);
+                    console.log(`[${new Date().toISOString()}] Auto-submit attempt ${attempt + 1} failed`);
                 }
             }
         }
 
-        // ===== WAIT FOR 3DS COMPLETION =====
+        // Wait for 3DS completion
         if (waitFor3DS) {
             console.log(`[${new Date().toISOString()}] Waiting for 3DS completion...`);
             let completed = false;
             let attempts = 0;
             const maxAttempts = 90;
-            let lastUrl = '';
 
             while (!completed && attempts < maxAttempts) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
@@ -200,87 +273,54 @@ app.post('/api/3ds-automate', async (req, res) => {
                 try {
                     const currentUrl = page.url();
 
-                    // Check for completion indicators
-                    const completionIndicators = [
-                        'checkout.stripe.com/return',
-                        'hooks.stripe.com',
-                        'payment_intent',
-                        'succeeded',
-                        'success_url',
-                        'redirect_status=succeeded',
-                        'source=',
-                        'client_secret=',
-                        'thank_you',
-                        'order-confirmation',
-                        'complete'
-                    ];
-
-                    for (const indicator of completionIndicators) {
-                        if (currentUrl.includes(indicator)) {
-                            completed = true;
-                            console.log(`[${new Date().toISOString()}] ✅ 3DS completed at: ${currentUrl}`);
-                            break;
-                        }
+                    if (currentUrl.includes('checkout.stripe.com/return') ||
+                        currentUrl.includes('hooks.stripe.com') ||
+                        currentUrl.includes('payment_intent') ||
+                        currentUrl.includes('succeeded') ||
+                        currentUrl.includes('success_url') ||
+                        currentUrl.includes('redirect_status=succeeded')) {
+                        completed = true;
+                        console.log(`[${new Date().toISOString()}] ✅ 3DS completed at: ${currentUrl}`);
+                        break;
                     }
-
-                    if (completed) break;
 
                     // Check for errors
-                    const errorIndicators = ['error', 'declined', 'failed', 'authentication_failure', 'card_declined'];
                     const pageContent = await page.content();
-                    for (const indicator of errorIndicators) {
-                        if (pageContent.includes(indicator) || currentUrl.includes(indicator)) {
-                            console.log(`[${new Date().toISOString()}] ❌ Error detected: ${indicator}`);
-                            completed = true;
-                            break;
-                        }
+                    if (pageContent.includes('error') || pageContent.includes('declined') || 
+                        pageContent.includes('failed') || pageContent.includes('authentication_failure')) {
+                        console.log(`[${new Date().toISOString()}] ❌ Error detected`);
+                        break;
                     }
 
-                    if (completed) break;
-
-                    // Try to click dynamic submit buttons
+                    // Try clicking dynamic buttons
                     if (attempts % 5 === 0) {
                         try {
                             const dynamicButtons = await page.$$(
-                                'button[type="submit"], input[type="submit"], ' +
-                                '.btn-primary, .continue-btn, .submit-btn'
+                                'button[type="submit"], input[type="submit"], .btn-primary, .continue-btn'
                             );
                             for (const button of dynamicButtons) {
-                                const visible = await button.isVisible();
-                                const enabled = await button.isEnabled();
-                                if (visible && enabled) {
+                                if (await button.isVisible() && await button.isEnabled()) {
                                     await button.click();
-                                    console.log(`[${new Date().toISOString()}] Clicked dynamic submit button`);
-                                    await page.waitForNavigation({
-                                        waitUntil: 'networkidle2',
-                                        timeout: 5000
-                                    }).catch(() => {});
+                                    console.log(`[${new Date().toISOString()}] Clicked dynamic button`);
+                                    await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 5000 }).catch(() => {});
                                     break;
                                 }
                             }
-                        } catch (e) {
-                            // No dynamic buttons
-                        }
+                        } catch (e) {}
                     }
 
                     if (attempts % 10 === 0) {
                         console.log(`[${new Date().toISOString()}] Waiting... ${attempts}s/${maxAttempts}s`);
                         console.log(`[${new Date().toISOString()}] Current URL: ${currentUrl.substring(0, 100)}...`);
                     }
-
                 } catch (e) {
                     console.error('Polling error:', e.message);
                 }
             }
-
-            if (!completed) {
-                console.log(`[${new Date().toISOString()}] ⏰ 3DS not completed within timeout (${maxAttempts}s)`);
-            }
         }
 
-        // ===== COLLECT RESULTS =====
+        // Collect results
         console.log(`[${new Date().toISOString()}] Collecting results...`);
-
         const finalUrl = await page.url();
         const finalTitle = await page.title();
         const finalContent = await page.content();
@@ -306,7 +346,6 @@ app.post('/api/3ds-automate', async (req, res) => {
         await browser.close();
         console.log(`[${new Date().toISOString()}] Browser closed`);
 
-        // ===== BUILD RESULT =====
         const result = {
             success: true,
             completed: true,
@@ -324,9 +363,6 @@ app.post('/api/3ds-automate', async (req, res) => {
         };
 
         console.log(`[${new Date().toISOString()}] ✅ Success! Time: ${result.processing_time}ms`);
-        console.log(`[${new Date().toISOString()}] Final URL: ${finalUrl.substring(0, 150)}...`);
-        console.log(`[${new Date().toISOString()}] === REQUEST COMPLETED ===`);
-
         res.json(result);
 
     } catch (error) {
@@ -350,18 +386,10 @@ app.post('/api/3ds-automate', async (req, res) => {
     }
 });
 
-// ===== START SERVER =====
+// Start server
 app.listen(PORT, () => {
     console.log(`✅ Puppeteer 3DS API Server running on port ${PORT}`);
     console.log(`   Health check: http://localhost:${PORT}/health`);
+    console.log(`   Test Chrome: http://localhost:${PORT}/test-chrome`);
     console.log(`   API endpoint: http://localhost:${PORT}/api/3ds-automate`);
-});
-
-// ===== HANDLE UNCAUGHT EXCEPTIONS =====
-process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
