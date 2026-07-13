@@ -6,6 +6,18 @@ const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const fs = require('fs');
 const path = require('path');
 
+// ===== FIX: Set cache directory BEFORE any other code =====
+const CACHE_DIR = '/opt/render/.cache/puppeteer';
+process.env.PUPPETEER_CACHE_DIR = CACHE_DIR;
+
+console.log(`[${new Date().toISOString()}] PUPPETEER_CACHE_DIR set to: ${process.env.PUPPETEER_CACHE_DIR}`);
+
+// Create cache directory if it doesn't exist
+if (!fs.existsSync(CACHE_DIR)) {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+    console.log(`[${new Date().toISOString()}] Created cache directory: ${CACHE_DIR}`);
+}
+
 puppeteer.use(StealthPlugin());
 
 const app = express();
@@ -27,7 +39,9 @@ app.get('/health', (req, res) => {
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
-        service: 'puppeteer-3ds-api'
+        service: 'puppeteer-3ds-api',
+        cache_dir: CACHE_DIR,
+        puppeteer_cache: process.env.PUPPETEER_CACHE_DIR
     });
 });
 
@@ -36,7 +50,6 @@ app.get('/test-chrome', (req, res) => {
     const chromePaths = [
         '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
         '/opt/render/.cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome',
-        process.env.CHROME_PATH,
         '/usr/bin/google-chrome',
         '/usr/bin/chromium-browser',
         '/usr/bin/chromium'
@@ -66,7 +79,10 @@ app.get('/test-chrome', (req, res) => {
         env: {
             CHROME_PATH: process.env.CHROME_PATH || 'not set',
             PUPPETEER_CACHE_DIR: process.env.PUPPETEER_CACHE_DIR || 'not set'
-        }
+        },
+        cache_dir_exists: fs.existsSync('/opt/render/.cache/puppeteer'),
+        cache_dir_contents: fs.existsSync('/opt/render/.cache/puppeteer') ? 
+            fs.readdirSync('/opt/render/.cache/puppeteer') : []
     });
 });
 
@@ -89,6 +105,7 @@ app.post('/api/3ds-automate', async (req, res) => {
 
         console.log(`[${new Date().toISOString()}] === NEW REQUEST ===`);
         console.log(`[${new Date().toISOString()}] URL: ${url ? url.substring(0, 100) : 'NO URL'}`);
+        console.log(`[${new Date().toISOString()}] PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR}`);
 
         if (!url) {
             return res.status(400).json({ error: 'URL is required' });
@@ -107,6 +124,9 @@ app.post('/api/3ds-automate', async (req, res) => {
                 console.log(`[${new Date().toISOString()}] Cache contents: ${files.join(', ')}`);
             } else {
                 console.log(`[${new Date().toISOString()}] Cache directory does not exist`);
+                // Try to create it
+                fs.mkdirSync(cacheDir, { recursive: true });
+                console.log(`[${new Date().toISOString()}] Created cache directory`);
             }
         } catch (e) {
             console.log(`[${new Date().toISOString()}] Error reading cache: ${e.message}`);
@@ -127,7 +147,9 @@ app.post('/api/3ds-automate', async (req, res) => {
                 '--disable-blink-features=AutomationControlled',
                 '--single-process'
             ],
-            timeout: timeout
+            timeout: timeout,
+            // Force puppeteer to use the correct cache
+            cacheDirectory: CACHE_DIR
         };
 
         // Only add executablePath if Chrome exists
@@ -135,7 +157,7 @@ app.post('/api/3ds-automate', async (req, res) => {
             launchOptions.executablePath = chromePath;
             console.log(`[${new Date().toISOString()}] Using Chrome at: ${chromePath}`);
         } else {
-            console.log(`[${new Date().toISOString()}] Chrome not found, letting puppeteer find it`);
+            console.log(`[${new Date().toISOString()}] Chrome not found, trying to let puppeteer find it`);
         }
 
         browser = await puppeteer.launch(launchOptions);
@@ -303,4 +325,5 @@ app.listen(PORT, () => {
     console.log(`   Health check: http://localhost:${PORT}/health`);
     console.log(`   Test Chrome: http://localhost:${PORT}/test-chrome`);
     console.log(`   API endpoint: http://localhost:${PORT}/api/3ds-automate`);
+    console.log(`   PUPPETEER_CACHE_DIR: ${process.env.PUPPETEER_CACHE_DIR}`);
 });
