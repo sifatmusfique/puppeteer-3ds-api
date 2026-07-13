@@ -4,6 +4,7 @@ const rateLimit = require('express-rate-limit');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
+// Use stealth plugin
 puppeteer.use(StealthPlugin());
 
 const app = express();
@@ -43,13 +44,13 @@ app.post('/api/3ds-automate', async (req, res) => {
             viewport = { width: 1280, height: 720 }
         } = req.body;
 
-        console.log(`[${new Date().toISOString()}] Processing 3DS URL: ${url ? url.substring(0, 100) : 'NO URL'}...`);
+        console.log(`[${new Date().toISOString()}] Processing URL: ${url ? url.substring(0, 100) : 'NO URL'}...`);
 
         if (!url) {
             return res.status(400).json({ error: 'URL is required' });
         }
 
-        // Launch Puppeteer
+        // ===== FIX: Better Puppeteer launch options for Render =====
         const browser = await puppeteer.launch({
             headless: 'new',
             args: [
@@ -74,13 +75,23 @@ app.post('/api/3ds-automate', async (req, res) => {
                 '--disable-infobars',
                 '--disable-notifications',
                 '--disable-popup-blocking',
+                '--disable-component-extensions-with-background-pages',
                 '--no-first-run',
                 '--force-color-profile=srgb',
                 '--metrics-recording-only',
                 '--password-store=basic',
-                '--use-mock-keychain'
+                '--use-mock-keychain',
+                // Extra flags for Render
+                '--single-process',
+                '--disable-accelerated-2d-canvas',
+                '--disable-accelerated-jpeg-decoding',
+                '--disable-accelerated-mjpeg-decode',
+                '--disable-accelerated-video-decode',
+                '--disable-accelerated-video-encode'
             ],
-            timeout: timeout
+            timeout: timeout,
+            // Explicitly set executable path for Render
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null
         });
 
         try {
@@ -210,14 +221,17 @@ app.post('/api/3ds-automate', async (req, res) => {
 
         } catch (error) {
             console.error(`[${new Date().toISOString()}] Error:`, error.message);
+            console.error('Stack:', error.stack);
             await browser.close();
             res.status(500).json({
                 success: false,
-                error: error.message
+                error: error.message,
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
             });
         }
     } catch (error) {
         console.error(`[${new Date().toISOString()}] Fatal error:`, error.message);
+        console.error('Stack:', error.stack);
         res.status(500).json({
             success: false,
             error: error.message
