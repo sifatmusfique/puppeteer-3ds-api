@@ -3,6 +3,14 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const path = require('path');
+
+// ===== FIX: Configure puppeteer cache path =====
+const os = require('os');
+const cacheDir = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
+process.env.PUPPETEER_CACHE_DIR = cacheDir;
+
+console.log(`[${new Date().toISOString()}] Puppeteer cache directory: ${cacheDir}`);
 
 puppeteer.use(StealthPlugin());
 
@@ -25,7 +33,8 @@ app.get('/health', (req, res) => {
     res.json({ 
         status: 'ok', 
         timestamp: new Date().toISOString(),
-        service: 'puppeteer-3ds-api'
+        service: 'puppeteer-3ds-api',
+        cache_dir: cacheDir
     });
 });
 
@@ -51,9 +60,69 @@ app.post('/api/3ds-automate', async (req, res) => {
             return res.status(400).json({ error: 'URL is required' });
         }
 
-        // ===== LAUNCH PUPPETEER WITH CHROME INSTALLED BY postinstall =====
+        // ===== FIX: Check if Chrome exists before launching =====
+        const fs = require('fs');
+        const chromePath = path.join(cacheDir, 'chrome/linux-127.0.6533.88/chrome-linux64/chrome');
+        
+        console.log(`[${new Date().toISOString()}] Looking for Chrome at: ${chromePath}`);
+        
+        if (!fs.existsSync(chromePath)) {
+            console.error(`[${new Date().toISOString()}] Chrome not found at: ${chromePath}`);
+            console.log(`[${new Date().toISOString()}] Checking directory contents...`);
+            try {
+                const dirContents = fs.readdirSync(path.dirname(chromePath));
+                console.log(`[${new Date().toISOString()}] Contents: ${dirContents.join(', ')}`);
+            } catch (e) {
+                console.log(`[${new Date().toISOString()}] Could not read directory: ${e.message}`);
+            }
+            
+            // Try to find Chrome anywhere in the cache
+            const findChrome = (dir) => {
+                try {
+                    const files = fs.readdirSync(dir);
+                    for (const file of files) {
+                        const fullPath = path.join(dir, file);
+                        if (fs.statSync(fullPath).isDirectory()) {
+                            const result = findChrome(fullPath);
+                            if (result) return result;
+                        } else if (file === 'chrome' || file === 'chromium' || file === 'google-chrome') {
+                            return fullPath;
+                        }
+                    }
+                } catch (e) {
+                    // Ignore
+                }
+                return null;
+            };
+            
+            const foundChrome = findChrome(cacheDir);
+            if (foundChrome) {
+                console.log(`[${new Date().toISOString()}] Found Chrome at: ${foundChrome}`);
+                // Use the found path instead
+                const browser = await puppeteer.launch({
+                    headless: true,
+                    executablePath: foundChrome,
+                    args: [
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                        '--disable-dev-shm-usage',
+                        '--disable-gpu',
+                        '--disable-web-security',
+                        '--disable-features=IsolateOrigins,site-per-process',
+                        '--disable-blink-features=AutomationControlled',
+                        '--single-process'
+                    ],
+                    timeout: timeout
+                });
+                // ... rest of the code
+                return;
+            }
+        }
+
+        // Launch with explicit Chrome path
         const browser = await puppeteer.launch({
             headless: true,
+            executablePath: chromePath,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
