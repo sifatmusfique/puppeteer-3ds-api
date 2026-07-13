@@ -4,7 +4,6 @@ const rateLimit = require('express-rate-limit');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
-// Use stealth plugin
 puppeteer.use(StealthPlugin());
 
 const app = express();
@@ -32,6 +31,8 @@ app.get('/health', (req, res) => {
 
 // Main 3DS automation endpoint
 app.post('/api/3ds-automate', async (req, res) => {
+    const startTime = Date.now();
+    
     try {
         const {
             url,
@@ -50,9 +51,9 @@ app.post('/api/3ds-automate', async (req, res) => {
             return res.status(400).json({ error: 'URL is required' });
         }
 
-        // ===== FIX: Better Puppeteer launch options for Render =====
+        // Launch Puppeteer with Render-optimized settings
         const browser = await puppeteer.launch({
-            headless: 'new',
+            headless: true,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -75,13 +76,11 @@ app.post('/api/3ds-automate', async (req, res) => {
                 '--disable-infobars',
                 '--disable-notifications',
                 '--disable-popup-blocking',
-                '--disable-component-extensions-with-background-pages',
                 '--no-first-run',
                 '--force-color-profile=srgb',
                 '--metrics-recording-only',
                 '--password-store=basic',
                 '--use-mock-keychain',
-                // Extra flags for Render
                 '--single-process',
                 '--disable-accelerated-2d-canvas',
                 '--disable-accelerated-jpeg-decoding',
@@ -89,9 +88,7 @@ app.post('/api/3ds-automate', async (req, res) => {
                 '--disable-accelerated-video-decode',
                 '--disable-accelerated-video-encode'
             ],
-            timeout: timeout,
-            // Explicitly set executable path for Render
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null
+            timeout: timeout
         });
 
         try {
@@ -213,10 +210,11 @@ app.post('/api/3ds-automate', async (req, res) => {
                 source: params.source || null,
                 payment_intent: params.payment_intent || null,
                 redirect_status: params.redirect_status || null,
-                client_secret: params.client_secret || null
+                client_secret: params.client_secret || null,
+                processing_time: Date.now() - startTime
             };
 
-            console.log(`[${new Date().toISOString()}] ✅ Success! Final URL: ${finalUrl.substring(0, 100)}...`);
+            console.log(`[${new Date().toISOString()}] ✅ Success! Time: ${result.processing_time}ms`);
             res.json(result);
 
         } catch (error) {
@@ -226,7 +224,7 @@ app.post('/api/3ds-automate', async (req, res) => {
             res.status(500).json({
                 success: false,
                 error: error.message,
-                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+                processing_time: Date.now() - startTime
             });
         }
     } catch (error) {
