@@ -13,34 +13,41 @@ puppeteer.use(StealthPlugin());
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ===== FIX: Download Chrome at startup =====
-const CHROME_CACHE_DIR = '/opt/render/.cache/puppeteer';
-const CHROME_PATH = path.join(CHROME_CACHE_DIR, 'chrome/linux-127.0.6533.88/chrome-linux64/chrome');
+// ===== FIX: Download Chrome at startup (Render.com Linux environment only) =====
+const isLinux = process.platform === 'linux';
+const CHROME_CACHE_DIR = isLinux ? '/opt/render/.cache/puppeteer' : path.join(__dirname, '.cache/puppeteer');
+const CHROME_PATH = isLinux 
+    ? path.join(CHROME_CACHE_DIR, 'chrome/linux-127.0.6533.88/chrome-linux64/chrome')
+    : '';
 
-console.log(`[${new Date().toISOString()}] Checking for Chrome at: ${CHROME_PATH}`);
+if (isLinux) {
+    console.log(`[${new Date().toISOString()}] Checking for Chrome at: ${CHROME_PATH}`);
 
-if (!fs.existsSync(CHROME_PATH)) {
-    console.log(`[${new Date().toISOString()}] Chrome not found, downloading...`);
-    if (!fs.existsSync(CHROME_CACHE_DIR)) {
-        fs.mkdirSync(CHROME_CACHE_DIR, { recursive: true });
+    if (!fs.existsSync(CHROME_PATH)) {
+        console.log(`[${new Date().toISOString()}] Chrome not found, downloading...`);
+        if (!fs.existsSync(CHROME_CACHE_DIR)) {
+            fs.mkdirSync(CHROME_CACHE_DIR, { recursive: true });
+        }
+        try {
+            console.log(`[${new Date().toISOString()}] Running: npx puppeteer browsers install chrome`);
+            execSync('npx puppeteer browsers install chrome', {
+                cwd: __dirname,
+                stdio: 'inherit',
+                env: { ...process.env, PUPPETEER_CACHE_DIR: CHROME_CACHE_DIR }
+            });
+            console.log(`[${new Date().toISOString()}] Chrome installed successfully`);
+        } catch (error) {
+            console.error(`[${new Date().toISOString()}] Failed to install Chrome:`, error.message);
+        }
     }
-    try {
-        console.log(`[${new Date().toISOString()}] Running: npx puppeteer browsers install chrome`);
-        execSync('npx puppeteer browsers install chrome', {
-            cwd: __dirname,
-            stdio: 'inherit',
-            env: { ...process.env, PUPPETEER_CACHE_DIR: CHROME_CACHE_DIR }
-        });
-        console.log(`[${new Date().toISOString()}] Chrome installed successfully`);
-    } catch (error) {
-        console.error(`[${new Date().toISOString()}] Failed to install Chrome:`, error.message);
-    }
-}
 
-if (fs.existsSync(CHROME_PATH)) {
-    console.log(`[${new Date().toISOString()}] ✅ Chrome found at: ${CHROME_PATH}`);
+    if (fs.existsSync(CHROME_PATH)) {
+        console.log(`[${new Date().toISOString()}] ✅ Chrome found at: ${CHROME_PATH}`);
+    } else {
+        console.log(`[${new Date().toISOString()}] ⚠️ Chrome still not found, will try puppeteer default`);
+    }
 } else {
-    console.log(`[${new Date().toISOString()}] ⚠️ Chrome still not found, will try puppeteer default`);
+    console.log(`[${new Date().toISOString()}] Running on non-Linux platform (${process.platform}). Letting Puppeteer resolve standard local Chrome executable.`);
 }
 
 // Rate limiting
